@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Monitoreo SPC</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Sistema de Monitoreo SPC</h1>
+        <div class="login">
+            <h2>Acceso Ingeniero de Calidad</h2>
+            <input type="text" id="username" placeholder="Usuario">
+            <input type="password" id="password" placeholder="Contraseña">
+            <button onclick="login()">Iniciar Sesión</button>
+        </div>
+        <div class="data-entry" id="dataEntry" style="display: none;">
+            <h2>Configuración de Límites (Ingeniero)</h2>
+            <select id="machineSelect">
+                <option value="">Seleccione Máquina</option>
+            </select>
+            <input type="text" id="partNumber" placeholder="Número de Parte">
+            <input type="number" id="lowerLimit" placeholder="Límite Inferior">
+            <input type="number" id="upperLimit" placeholder="Límite Superior">
+            <button onclick="setLimits()">Establecer Límites</button>
+        </div>
+        <div class="data-entry">
+            <h2>Entrada de Mediciones (Operador)</h2>
+            <select id="operatorMachineSelect">
+                <option value="">Seleccione Máquina</option>
+            </select>
+            <input type="number" id="measurement" placeholder="Medición">
+            <button onclick="addMeasurement()">Registrar Medición</button>
+        </div>
+        <div id="machines"></div>
+    </div>
+
+    <script>
+        let isAuthenticated = false;
+        const backendUrl = 'https://spc-system.vercel.app/api'; // Actualiza con tu URL de Vercel
+
+        async function fetchMachines() {
+            const response = await fetch(`${backendUrl}/machines`);
+            return await response.json();
+        }
+
+        async function updateMachineSelects() {
+            const machineSelect = document.getElementById('machineSelect');
+            const operatorMachineSelect = document.getElementById('operatorMachineSelect');
+            machineSelect.innerHTML = '<option value="">Seleccione Máquina</option>';
+            operatorMachineSelect.innerHTML = '<option value="">Seleccione Máquina</option>';
+            const machines = await fetchMachines();
+            machines.forEach(machine => {
+                const option = document.createElement('option');
+                option.value = machine.id;
+                option.textContent = machine.name;
+                machineSelect.appendChild(option.cloneNode(true));
+                operatorMachineSelect.appendChild(option);
+            });
+        }
+
+        async function login() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const response = await fetch(`${backendUrl}/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const result = await response.json();
+            if (response.ok) {
+                isAuthenticated = true;
+                document.getElementById('dataEntry').style.display = 'block';
+                alert('Inicio de sesión exitoso');
+            } else {
+                alert(result.message);
+            }
+        }
+
+        async function setLimits() {
+            if (!isAuthenticated) {
+                alert('Debe iniciar sesión como ingeniero de calidad');
+                return;
+            }
+            const machineId = document.getElementById('machineSelect').value;
+            const partNumber = document.getElementById('partNumber').value;
+            const lowerLimit = parseFloat(document.getElementById('lowerLimit').value);
+            const upperLimit = parseFloat(document.getElementById('upperLimit').value);
+            if (!machineId || !partNumber || isNaN(lowerLimit) || isNaN(upperLimit)) {
+                alert('Por favor, complete todos los campos');
+                return;
+            }
+            const response = await fetch(`${backendUrl}/machines?id=${machineId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ part_number: partNumber, lower_limit: lowerLimit, upper_limit: upperLimit })
+            });
+            const result = await response.json();
+            alert(result.message);
+            updateMachineDisplays();
+        }
+
+        async function addMeasurement() {
+            const machineId = document.getElementById('operatorMachineSelect').value;
+            const measurement = parseFloat(document.getElementById('measurement').value);
+            if (!machineId || isNaN(measurement)) {
+                alert('Por favor, seleccione una máquina y una medición válida');
+                return;
+            }
+            const response = await fetch(`${backendUrl}/measurements`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ machine_id: machineId, measurement })
+            });
+            const result = await response.json();
+            alert(result.message);
+            updateMachineDisplays();
+        }
+
+        async function updateMachineDisplays() {
+            const machinesContainer = document.getElementById('machines');
+            machinesContainer.innerHTML = '';
+            const machines = await fetchMachines();
+            for (const machine of machines) {
+                const measurements = await (await fetch(`${backendUrl}/measurements?machine_id=${machine.id}`)).json();
+                const div = document.createElement('div');
+                div.className = 'machine';
+                div.innerHTML = `
+                    <h3>${machine.name}</h3>
+                    <p>Número de Parte: ${machine.part_number || 'No establecido'}</p>
+                    <p>Límite Inferior: ${machine.lower_limit || 'No establecido'}</p>
+                    <p>Nominal: ${machine.nominal || 'No calculado'}</p>
+                    <p>Límite Superior: ${machine.upper_limit || 'No establecido'}</p>
+                    <p>Última Medición: ${measurements.length > 0 ? measurements[0].measurement : 'Ninguna'}</p>
+                    ${measurements.length > 0 && machine.lower_limit && machine.upper_limit && 
+                      (measurements[0].measurement < machine.lower_limit || measurements[0].measurement > machine.upper_limit) ? 
+                        `<p class="alert">¡Alerta! Medición fuera de especificaciones</p>` : ''}
+                    <canvas id="chart${machine.id}"></canvas>
+                `;
+                machinesContainer.appendChild(div);
+                if (measurements.length > 0 && machine.lower_limit && machine.upper_limit) {
+                    const ctx = document.getElementById(`chart${machine.id}`).getContext('2d');
+                    new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: measurements.map((_, i) => `Medición ${measurements.length - i}`).reverse(),
+                            datasets: [
+                                {
+                                    label: 'Mediciones',
+                                    data: measurements.map(m => m.measurement).reverse(),
+                                    borderColor: 'blue',
+                                    fill: false
+                                },
+                                {
+                                    label: 'Límite Superior',
+                                    data: Array(measurements.length).fill(machine.upper_limit),
+                                    borderColor: 'red',
+                                    borderDash: [5, 5],
+                                    fill: false
+                                },
+                                {
+                                    label: 'Nominal',
+                                    data: Array(measurements.length).fill(machine.nominal),
+                                    borderColor: 'green',
+                                    borderDash: [5, 5],
+                                    fill: false
+                                },
+                                {
+                                    label: 'Límite Inferior',
+                                    data: Array(measurements.length).fill(machine.lower_limit),
+                                    borderColor: 'red',
+                                    borderDash: [5, 5],
+                                    fill: false
+                                }
+                            ]
+                        },
+                        options: {
+                            scales: {
+                                y: { beginAtZero: false }
+                            }
+                        }
+                    });
+                }
+            }
+        }
+
+        updateMachineSelects().then(() => updateMachineDisplays());
+    </script>
+</body>
+</html>
